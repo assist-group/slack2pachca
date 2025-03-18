@@ -1,0 +1,502 @@
+zabbix_export:
+  version: '6.0'
+  date: '2021-07-21T15:15:32Z'
+  media_types:
+    -
+      name: Pachca
+      type: WEBHOOK
+      parameters:
+        -
+          name: alert_message
+          value: '{ALERT.MESSAGE}'
+        -
+          name: alert_subject
+          value: '{ALERT.SUBJECT}'
+        -
+          name: bot_token
+          value: '<PLACE YOUR BOT TOKEN>'
+        -
+          name: bot_user_id
+          value: '<PLACE BOT USER ID>'
+        -
+          name: channel_id
+          value: '{ALERT.SENDTO}'
+        -
+          name: discovery_host_dns
+          value: '{DISCOVERY.DEVICE.DNS}'
+        -
+          name: discovery_host_ip
+          value: '{DISCOVERY.DEVICE.IPADDRESS}'
+        -
+          name: event_date
+          value: '{EVENT.DATE}'
+        -
+          name: event_id
+          value: '{EVENT.ID}'
+        -
+          name: event_nseverity
+          value: '{EVENT.NSEVERITY}'
+        -
+          name: event_opdata
+          value: '{EVENT.OPDATA}'
+        -
+          name: event_recovery_date
+          value: '{EVENT.RECOVERY.DATE}'
+        -
+          name: event_recovery_time
+          value: '{EVENT.RECOVERY.TIME}'
+        -
+          name: event_severity
+          value: '{EVENT.SEVERITY}'
+        -
+          name: event_source
+          value: '{EVENT.SOURCE}'
+        -
+          name: event_tags
+          value: '{EVENT.TAGSJSON}'
+        -
+          name: event_time
+          value: '{EVENT.TIME}'
+        -
+          name: event_update_date
+          value: '{EVENT.UPDATE.DATE}'
+        -
+          name: event_update_status
+          value: '{EVENT.UPDATE.STATUS}'
+        -
+          name: event_update_time
+          value: '{EVENT.UPDATE.TIME}'
+        -
+          name: event_value
+          value: '{EVENT.VALUE}'
+        -
+          name: host_conn
+          value: '{HOST.CONN}'
+        -
+          name: host_name
+          value: '{HOST.NAME}'
+        -
+          name: pachca_mode
+          value: alarm
+        -
+          name: trigger_description
+          value: '{TRIGGER.DESCRIPTION}'
+        -
+          name: trigger_id
+          value: '{TRIGGER.ID}'
+        -
+          name: zabbix_url
+          value: '{$ZABBIX.URL}'
+      script: |
+        var SEVERITY_EMOJI = [
+            '❕', 'ℹ️', '⚠️',
+            '❗', '❌', '🔥'
+        ];
+         
+        var RESOLVE_EMOJI = '✅';
+         
+        var PACHCA_MODE_HANDLERS = {
+            alarm: handlerAlarm,
+            event: handlerEvent
+        };
+         
+        if (!String.prototype.format) {
+            String.prototype.format = function() {
+                var args = arguments;
+         
+                return this.replace(/{(\d+)}/g, function(match, number) {
+                    return number in args
+                        ? args[number]
+                        : match
+                    ;
+                });
+            };
+        }
+         
+        function isEventProblem(params) {
+            return params.event_value == 1
+                && params.event_update_status == 0
+            ;
+        }
+         
+        function isEventUpdate(params) {
+            return params.event_value == 1
+                && params.event_update_status == 1
+            ;
+        }
+         
+        function isEventResolve(params) {
+            return params.event_value == 0;
+        }
+         
+        function createProblemURL(zabbix_url, triggerid, eventid, event_source) {
+            var problem_url = '';
+            if (event_source === '0') {
+                problem_url = '{0}/tr_events.php?triggerid={1}&eventid={2}'
+                    .format(
+                        zabbix_url,
+                        triggerid,
+                        eventid
+                    );
+            }
+            else {
+                problem_url = zabbix_url;
+            }
+         
+            return problem_url;
+        }
+         
+        function handlerAlarm(params) {
+            var fields = {
+                message: {
+                    entity_type: "discussion",
+                    entity_id: params.channel_id,
+                }
+            };
+         
+            if (isEventProblem(params)) {
+                fields.message.content = params.alert_message;
+                fields.message.buttons = [[{
+                    text: "Ссылка на триггер",
+                    url: createProblemURL(params.zabbix_url, params.trigger_id, params.event_id, params.event_source)
+                }]]
+         
+                var resp = JSON.parse(req.post(Pachca.postMessage, JSON.stringify(fields)));
+         
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp);
+                }
+                var message_id = resp["data"].id;        
+         
+                // Send Emoji reaction code
+                reaction_body = {
+                    code: SEVERITY_EMOJI[params.event_nseverity]
+                }
+                var resp_make_reactions = req.post(Pachca.postMessage + '/' + message_id + '/reactions', JSON.stringify(reaction_body));
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp_make_reactions);
+                }       
+                
+                result.tags = {
+                    ['__message_id_' + params.channel_id]: message_id,
+                    ['__channel_id_']: resp["data"].chat_id,
+                    ['__message_link_']: resp["data"].url,
+                };
+         
+            }
+            else if (isEventUpdate(params)) {
+                try {
+                    var channel_id_event_tags = JSON.parse(params.event_tags);
+                } catch (error) {
+                    throw 'Cannot process event tags: ' + error;
+                }
+         
+                var thread_id = 'thread_id';
+         
+                if (Array.isArray(channel_id_event_tags)) {
+                    for (i in channel_id_event_tags) {
+                        if (channel_id_event_tags[i].tag.includes('__thread_id_' + params.channel_id)) {
+                            thread_id = channel_id_event_tags[i].value;
+                            continue;
+                        }
+                        if (channel_id_event_tags[i].tag.includes('__message_id_' + params.channel_id)) {
+                            message_id = channel_id_event_tags[i].value;
+                        }
+                    }
+                }
+         
+                if (isNaN(thread_id)) {
+                    var resp_make_thread = JSON.parse(req.post(Pachca.postMessage + '/' + message_id + '/thread'))
+                    if (req.getStatus() != 201) {
+                        throw JSON.stringify(resp_make_thread);
+                    }
+                    thread_id = resp_make_thread["data"].id;
+                }
+         
+                fields.message.entity_type = "thread";
+                fields.message.entity_id = thread_id;
+                fields.message.content = params.alert_message;
+         
+                resp = JSON.parse(req.post(Pachca.postMessage, JSON.stringify(fields)));
+         
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp);
+                }
+         
+                result.tags = {
+                    ['__thread_id_' + params.channel_id]: thread_id
+                };
+         
+            }
+            else if (isEventResolve(params)) {
+         
+                fields.message.content = '';
+         
+                try {
+                    var channel_id_event_tags = JSON.parse(params.event_tags);
+                } catch (error) {
+                    throw 'Cannot process event tags: ' + error;
+                }
+         
+                if (Array.isArray(channel_id_event_tags)) {
+                    for (i in channel_id_event_tags) {
+                        if (channel_id_event_tags[i].tag.includes('__message_id_' + params.channel_id)) {
+                            message_id = channel_id_event_tags[i].value;
+                        }
+                    }
+                }
+         
+                fields.message.content = params.alert_message;
+         
+                resp = JSON.parse(req.put(Pachca.postMessage + '/' + message_id, JSON.stringify(fields)));
+                if (req.getStatus() != 200) {
+                    throw JSON.stringify(resp);
+                }
+         
+                // Search Emoji reaction for message
+                resp_message_reaction_codes = JSON.parse(req.get(Pachca.postMessage + '/' + message_id + '/reactions'))
+                if (req.getStatus() != 200) {
+                    throw JSON.stringify(resp_message_reaction_codes);
+                }
+                for (i in resp_message_reaction_codes.data) {
+                    if (resp_message_reaction_codes.data[i].user_id == params.bot_user_id) {
+                        message_reaction_code = resp_message_reaction_codes.data[i].code
+                        break;
+                    }
+                }
+         
+                // Delete old Emoji reaction
+                delete_reaction_body = {
+                    code: message_reaction_code
+                }
+                var resp_delete_reactions = req.delete(Pachca.postMessage + '/' + message_id + '/reactions', JSON.stringify(delete_reaction_body));
+                if (req.getStatus() != 204) {
+                    throw JSON.stringify(resp_delete_reactions);
+                }
+         
+                // Send Emoji reaction code
+                reaction_body = {
+                    code: RESOLVE_EMOJI
+                }
+                var resp_make_reactions = req.post(Pachca.postMessage + '/' + message_id + '/reactions', JSON.stringify(reaction_body));
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp_make_reactions);
+                }
+            }
+        }
+         
+        function handlerEvent(params) {
+            var fields = {
+                message: {
+                    entity_type: "discussion",
+                    entity_id: params.channel_id,
+                }
+            };
+         
+            if (isEventProblem(params)) {
+                fields.message.content = params.alert_message;
+                fields.message.buttons = [[{
+                    text: "Ссылка на триггер",
+                    url: createProblemURL(params.zabbix_url, params.trigger_id, params.event_id, params.event_source)
+                }]]
+         
+                var resp = JSON.parse(req.post(Pachca.postMessage, JSON.stringify(fields)));
+         
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp);
+                }
+         
+                result.tags = {
+                    ['__message_link_']: resp["data"].url
+                }
+         
+            }
+            else if (isEventUpdate(params)) {
+                fields.message.content = params.alert_message;
+         
+                resp = JSON.parse(req.post(Pachca.postMessage, JSON.stringify(fields)));
+         
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp);
+                }
+         
+            }
+            else if (isEventResolve(params)) {
+                fields.message.content = params.alert_message;
+         
+                resp = JSON.parse(req.post(Pachca.postMessage, JSON.stringify(fields)));
+         
+                if (req.getStatus() != 201) {
+                    throw JSON.stringify(resp);
+                }
+            }
+        }
+         
+        function validateParams(params) {
+            if (typeof params.bot_token !== 'string' || params.bot_token.trim() === '') {
+                throw 'Field "bot_token" cannot be empty';
+            }
+         
+            if (isNaN(params.channel_id)) {
+                throw 'Field "channel_id" is not a number';
+            }
+         
+            if (isNaN(params.event_id)) {
+                throw 'Field "event_id" is not a number';
+            }
+         
+            if ([0, 1, 2, 3].indexOf(parseInt(params.event_source)) === -1) {
+                throw 'Incorrect "event_source" parameter given: "' + params.event_source + '".\nMust be 0-3.';
+            }
+         
+            if (params.event_source !== '0') {
+                params.event_nseverity = '0';
+                params.event_severity = 'Not classified';
+                params.event_update_status = '0';
+                params.pachca_mode = 'event';
+            }
+         
+            if (params.event_source === '1' || params.event_source === '2') {
+                params.event_value = '1';
+            }
+         
+            if (params.event_source === '1') {
+                params.host_name = params.discovery_host_dns;
+                params.host_ip = params.discovery_host_ip;
+            }
+         
+            if (!~[0, 1, 2, 3, 4, 5].indexOf(parseInt(params.event_nseverity))) {
+                throw 'Incorrect "event_nseverity" parameter given: ' + params.event_nseverity + '\nMust be 0-5.';
+            }
+         
+            if (typeof params.event_severity !== 'string' || params.event_severity.trim() === '') {
+                throw 'Field "event_severity" cannot be empty';
+            }
+         
+            if (params.event_update_status !== '0' && params.event_update_status !== '1') {
+                throw 'Incorrect "event_update_status" parameter given: ' + params.event_update_status + '\nMust be 0 or 1.';
+            }
+         
+            if (params.event_value !== '0' && params.event_value !== '1') {
+                throw 'Incorrect "event_value" parameter given: ' + params.event_value + '\nMust be 0 or 1.';
+            }
+         
+            if (typeof params.host_conn !== 'string' || params.host_conn.trim() === '') {
+                throw 'Field "host_conn" cannot be empty';
+            }
+         
+            if (typeof params.host_name !== 'string' || params.host_name.trim() === '') {
+                throw 'Field "host_name" cannot be empty';
+            }
+         
+            if (!~['alarm', 'event'].indexOf(params.pachca_mode)) {
+                throw 'Incorrect "pachca_mode" parameter given: ' + params.pachca_mode + '\nMust be "alarm" or "event".';
+            }
+         
+            if (isNaN(params.trigger_id) && params.event_source === '0') {
+                throw 'field "trigger_id" is not a number';
+            }
+         
+            if (typeof params.zabbix_url !== 'string' || params.zabbix_url.trim() === '') {
+                throw 'Field "zabbix_url" cannot be empty';
+            }
+         
+            if (!/^(http|https):\/\/.+/.test(params.zabbix_url)) {
+                throw 'Field "zabbix_url" must contain a schema';
+            }
+        }
+         
+        try {
+            var params = JSON.parse(value);
+         
+            validateParams(params);
+         
+            var req = new HttpRequest(),
+                result = {tags: {}};
+         
+            req.addHeader('Content-Type: application/json; charset=utf-8');
+            req.addHeader('Authorization: Bearer ' + params.bot_token);
+         
+            var pachca_endpoint = 'https://api.pachca.com/api/shared/v1/';
+         
+            var Pachca = {
+                postMessage: pachca_endpoint + 'messages'
+            };
+         
+            params.pachca_mode = params.pachca_mode.toLowerCase();
+            params.pachca_mode = params.pachca_mode in PACHCA_MODE_HANDLERS
+                ? params.pachca_mode
+                : 'alarm';
+         
+            PACHCA_MODE_HANDLERS[params.pachca_mode](params);
+         
+            if (params.event_source === '0') {
+                return JSON.stringify(result);
+            }
+            else {
+                return 'OK';
+            }
+        }
+        catch (error) {
+            Zabbix.log(4, '[ Pachca Webhook ] Pachca notification failed : ' + error);
+            throw 'Pachca notification failed : ' + error;
+        }
+      process_tags: 'YES'
+      message_templates:
+        -
+          event_source: TRIGGERS
+          operation_mode: PROBLEM
+          subject: 'Problem: {EVENT.NAME}'
+          message: |
+            Problem started at {EVENT.TIME} on {EVENT.DATE}
+            Problem name: {EVENT.NAME}
+            Host: {HOST.NAME}
+            Severity: {EVENT.SEVERITY}
+            Operational data: {EVENT.OPDATA}
+            Original problem ID: {EVENT.ID}
+            {TRIGGER.URL}
+        -
+          event_source: TRIGGERS
+          operation_mode: RECOVERY
+          subject: 'Resolved in {EVENT.DURATION}: {EVENT.NAME}'
+          message: |
+            Problem has been resolved at {EVENT.RECOVERY.TIME} on {EVENT.RECOVERY.DATE}
+            Problem name: {EVENT.NAME}
+            Problem duration: {EVENT.DURATION}
+            Host: {HOST.NAME}
+            Severity: {EVENT.SEVERITY}
+            Original problem ID: {EVENT.ID}
+            {TRIGGER.URL}
+        -
+          event_source: TRIGGERS
+          operation_mode: UPDATE
+          subject: 'Updated problem in {EVENT.AGE}: {EVENT.NAME}'
+          message: |
+            {USER.FULLNAME} {EVENT.UPDATE.ACTION} problem at {EVENT.UPDATE.DATE} {EVENT.UPDATE.TIME}.
+            {EVENT.UPDATE.MESSAGE}
+            
+            Current problem status is {EVENT.STATUS}, age is {EVENT.AGE}, acknowledged: {EVENT.ACK.STATUS}.
+        -
+          event_source: DISCOVERY
+          operation_mode: PROBLEM
+          subject: 'Discovery: {DISCOVERY.DEVICE.STATUS} {DISCOVERY.DEVICE.IPADDRESS}'
+          message: |
+            Discovery rule: {DISCOVERY.RULE.NAME}
+            
+            Device IP: {DISCOVERY.DEVICE.IPADDRESS}
+            Device DNS: {DISCOVERY.DEVICE.DNS}
+            Device status: {DISCOVERY.DEVICE.STATUS}
+            Device uptime: {DISCOVERY.DEVICE.UPTIME}
+            
+            Device service name: {DISCOVERY.SERVICE.NAME}
+            Device service port: {DISCOVERY.SERVICE.PORT}
+            Device service status: {DISCOVERY.SERVICE.STATUS}
+            Device service uptime: {DISCOVERY.SERVICE.UPTIME}
+        -
+          event_source: AUTOREGISTRATION
+          operation_mode: PROBLEM
+          subject: 'Autoregistration: {HOST.HOST}'
+          message: |
+            Host name: {HOST.HOST}
+            Host IP: {HOST.IP}
+            Agent port: {HOST.PORT}
