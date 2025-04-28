@@ -5,6 +5,8 @@
 
 Историю нашей миграции можно прочитать по следующей ссылке - [История переноса данных](STORY.md).
 
+Статья в блоге Pachca - [Самостоятельный импорт чатов из Slack в Пачку](https://www.pachca.com/blog-posts/samostoyatelnyy-import-chatov-iz-slack-v-pachcu).
+
 ## Инсталляция
 
 - скачать исходники;
